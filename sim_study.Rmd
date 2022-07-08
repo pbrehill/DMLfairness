@@ -1,0 +1,418 @@
+---
+title: "Simulation"
+output: html_notebook
+---
+
+```{r}
+library(tidyverse)
+library(wakefield)
+library(magrittr)
+library("fastDummies")
+library(caret)
+library(ranger)
+library(grf)
+```
+
+```{r}
+# Set global variables
+set.seed(11111111)
+train_size <- 5000
+test_size <- 5000
+
+ntree <- 5000
+```
+
+```{r}
+
+```
+
+
+
+```{r}
+wakefield_data <- r_data_frame(
+  n = 100000,
+  id,
+  rating = rnorm(mean = 50, sd = 15),
+  race = race(),
+  Age = age(x = 18:25),
+  Gender = gender_inclusive(
+    x = c("Male", "Female", "NonBinary"),
+    prob = c(0.7, 0.275, 0.025),
+    ),
+  grade,
+  ability = rnorm(mean = 50, sd = 20)
+)
+
+wakefield_data %>%
+  mutate(race = as.factor(race),
+         Gender = as.factor(Gender))
+
+wakefield_data$internal_assessment <- wakefield_data$ability
+
+```
+
+```{r}
+wakefield_data %<>% select(-ID)
+
+head(wakefield_data)
+```
+
+
+```{r}
+# wakefield_effects <- wakefield_data %>%
+#   transmute(age_effect = (rnorm(1 , 2, 1)) * (sin(age) * 2), # Younger people have worse outcomes due to less experience (used sin here for complexity. )
+#          gender_effect = (gender_male - 1) * rnorm(1 , 5, 2), # Women and non-binary people have worse outcomes from lack of support
+#          race_effect = (race_white - 1) * rnorm(1 , 5, 2),
+#          race_gen_interaction = ifelse(race_white == 0 & gender_male == 0, (race_white - 1) * rnorm(1 , 5, 2), 0), # There is also a compounding interaction
+#          grade_effect = (((grade - 80) * rnorm(1 , 1, 0.006) * 0.8) ** 4),
+#          assessment_effect = (internal_assessment * rnorm(1 , 1, 0.0002) * 8),
+#          grade_effect = (grade_effect - min(grade_effect))/ (max(grade_effect) - min(grade_effect)) * 1000,
+#          assessment_effect = (assessment_effect - min(assessment_effect))/ (max(assessment_effect) - min(assessment_effect)) * 1000
+#          )
+
+Bage <- 3.1
+Bgender <- 3.7
+Brace <- 1.9
+Bracegen <- 7
+Bgrade <- 0.7
+Bassessment <- 0.13
+
+simulate_data <- function(data) {
+  data %<>% dummy_cols() %>% janitor::clean_names()
+  
+  data$assessment_biased <- ((data$internal_assessment / 10) * ((data$gender_male + 1.17) * (data$race_white + 1.15))) +
+    (5 * data$gender_male) +
+    rnorm(length(data$internal_assessment), 0, 1.09)
+
+data$grade <- ((data$grade / 10) * ((data$gender_male + 1.29))) +
+  (5 * data$gender_male) +
+  rnorm(length(data$grade), 0, 1.09)
+
+data$rating <- (sin(data$age) * Bage) + 
+  (Bgender * (data$gender_male)) +
+  (Brace * (data$race_white)) +
+  (Bracegen * data$gender_male * data$race_white) +
+  (Bgrade * data$grade) +
+  (Bassessment * data$assessment_biased) +
+  rnorm(length(data$internal_assessment), 0, 10)
+
+  return(data)
+}
+
+wakefield_data %<>% simulate_data()
+
+# wakefield_data$assessment_biased <- ((wakefield_data$internal_assessment / 10) * ((wakefield_data$gender_male + 1.07) * (wakefield_data$race_white + 1.15))) + rnorm(length(wakefield_data$internal_assessment), 0, 1.09)
+# 
+# wakefield_data$grade <- ((wakefield_data$grade / 10) * ((wakefield_data$gender_male + 1.29))) + rnorm(length(wakefield_data$grade), 0, 1.09)
+# 
+# wakefield_data$rating <- (sin(wakefield_data$age) * Bage) + 
+#   (Bgender * (wakefield_data$gender_male)) +
+#   (Brace * (wakefield_data$race_white)) +
+#   (Bracegen * wakefield_data$gender_male * wakefield_data$race_white) +
+#   (Bgrade * wakefield_data$grade) +
+#   (Bassessment * wakefield_data$assessment_biased) +
+#   rnorm(length(wakefield_data$internal_assessment), 0, 10)
+```
+
+```{r}
+wakefield_validate <- wakefield_data[train_size+1:train_size + test_size, ]
+wakefield_fit <- wakefield_data[1:train_size, ]
+wakefield_data <- wakefield_fit
+```
+
+
+
+```{r}
+wakefield_folds <- createFolds(wakefield_data$rating)
+wakefield_data$Y_est <- NULL
+wakefield_data$grade_model_est <- NULL
+wakefield_data$assessment_model_est <- NULL
+
+# Intialise progress bar
+pb = txtProgressBar(min = 0, max = length(wakefield_folds), initial = 0) 
+
+Y_models <- list()
+assessment_models <- list()
+grade_models <- list()
+
+for (fold in 1:length(wakefield_folds)) {
+  # Split sample
+  train <- wakefield_data[-wakefield_folds[[fold]],]
+  estimate <- wakefield_data[wakefield_folds[[fold]],]
+  
+  # Fit models
+  Y_model <- ranger(rating ~ age + gender_male + gender_female + gender_non_binary + race_white + race_black + race_hispanic + race_asian + race_bi_racial + race_native + race_other + race_hawaiian, data = train, num.trees = ntree)
+  
+  grade_model <- ranger(grade ~ age + gender_male + gender_female + gender_non_binary + race_white + race_black + race_hispanic + race_asian + race_bi_racial + race_native + race_other + race_hawaiian, data = train, num.trees = ntree)
+  
+  assessment_model <- ranger(assessment_biased ~ age + gender_male + gender_female + gender_non_binary + race_white + race_black + race_hispanic + race_asian + race_bi_racial + race_native + race_other + race_hawaiian, data = train, num.trees = ntree)
+  
+  # Get estimates
+  wakefield_data[wakefield_folds[[fold]], 'Y_est'] <- predict(Y_model, data = estimate)$predictions
+  
+  wakefield_data[wakefield_folds[[fold]], 'grade_model_est'] <- predict(grade_model, data = estimate)$predictions
+    
+  wakefield_data[wakefield_folds[[fold]], 'assessment_model_est'] <- predict(assessment_model, data = estimate)$predictions
+  
+  Y_models[[fold]] <- Y_model
+  assessment_models[[fold]] <- assessment_model
+  grade_models[[fold]] <- grade_model 
+      
+  setTxtProgressBar(pb,fold)
+}
+
+wakefield_data$Y_res <- wakefield_data$rating - wakefield_data$Y_est
+wakefield_data$grade_model_res <- wakefield_data$grade - wakefield_data$grade_model_est
+wakefield_data$assessment_model_res <- wakefield_data$assessment_biased - wakefield_data$assessment_model_est
+```
+
+```{r}
+# Get validate split residuals
+wakefield_data$Y_res <- wakefield_data$rating - wakefield_data$Y_est
+wakefield_data$grade_model_res <- wakefield_data$grade - wakefield_data$grade_model_est
+wakefield_data$assessment_model_res <- wakefield_data$assessment_biased - wakefield_data$assessment_model_est
+```
+
+
+```{r}
+map(wakefield_data, ~qplot(x = .x, y = Y_res, data = wakefield_data) + geom_smooth())
+```
+
+```{r}
+wakefield_fit <- wakefield_data
+```
+
+
+```{r}
+final_model <- ranger(Y_res ~ grade_model_res + assessment_model_res, data = wakefield_fit, num.trees = ntree)
+
+final_model_unfair <- ranger(rating ~ grade + assessment_biased, data = wakefield_fit, num.trees = ntree)
+```
+
+```{r}
+# Get nuisance model
+## Make function
+predict_cross <- function(models, data = wakefield_validate) {
+  preds <- map(models, ~predict(.x, data) %>% .$predictions)
+
+  names(preds) <- paste0('model', 1:length(models))
+  bind_cols(preds) %>% rowMeans()
+}
+
+dml_fair <- function(data) {
+  data1 <- data
+  
+  ## Get estimates
+  data$assessment_model_est <- predict_cross(assessment_models, data = data1)
+  data$grade_model_est <- predict_cross(grade_models, data = data1)
+  
+  ## Get residuals
+  data$grade_model_res <- data$grade - data$grade_model_est
+  data$assessment_model_res <- data$assessment_biased - data$assessment_model_est
+  
+  # Get predictions
+  final_prediction_model <- final_model %>% predict(data = data)
+  final_predictions <- final_prediction_model$predictions
+  
+  final_prediction_model_unfair <- final_model_unfair %>% predict(data = data)
+  final_predictions_unfair <- final_prediction_model_unfair$predictions
+  
+  data$ests <- final_predictions
+  data$ests_unfair <- final_predictions_unfair
+  
+  data
+}
+
+
+```
+
+
+```{r}
+# Base case
+base_case <- predict(Y_model, data = data.frame(
+  age = 18,
+  gender_male = 1,
+  gender_female = 0,
+  gender_non_binary = 0,
+  race_white = 1,
+  race_black = 0,
+  race_hispanic = 0,
+  race_asian = 0, 
+  race_bi_racial = 0,
+  race_native = 0,
+  race_other = 0,
+  race_hawaiian = 0
+  )
+        )$predictions
+```
+
+```{r}
+wakefield_validate <- dml_fair(wakefield_validate)
+```
+
+```{r}
+# Create residuals + base case predictions
+wakefield_validate$bcY <- wakefield_validate$ests + base_case
+
+# Gather in long format
+wakefield_long <- wakefield_validate %>%
+  gather(key = "estimate", value = "value", bcY, ests_unfair) %>%
+  mutate(estimate = ifelse(estimate == "bcY", "Fair estimate", "Unfair estimate"))
+```
+
+
+
+```{r}
+make_facets <- function(data, variable, facet_var = NULL, dashed_line = "---------") {
+  variable <- ensym(variable)
+  
+  if(is.null(facet_var)) {
+    facet_setting <- facet_grid(cols = vars(estimate))
+  } else {
+    facet_setting <- facet_grid(cols = vars(estimate), rows = vars(!!variable))
+  }
+  
+  data %>%
+  ggplot(aes(x = !!variable, y = value)) +
+  geom_boxplot() +
+  stat_summary(aes(y = ability / mean(ability) * mean(data$value[data$estimate == 'Fair estimate'])), fun.y = mean, colour = "red", size = 5, geom = "text", label= dashed_line) +
+  scale_y_continuous(
+   name = "Predictions",
+   sec.axis = sec_axis(~(./ mean(data$value[data$estimate == 'Fair estimate'])) * mean(data$ability), name="Average ability (latent)")
+  ) + facet_grid(cols = vars(estimate))
+}
+```
+
+```{r}
+# Gender graph
+make_facets(wakefield_long, gender)
+ggsave("gender.png", width = 7, height = 7)
+```
+
+```{r}
+# Race graph
+make_facets(wakefield_long, race, dashed_line = "---")
+ggsave("race.png", width = 10, height = 7)
+```
+
+```{r}
+# Age graph
+wakefield_long %>%
+  mutate(age = as.factor(age)) %>%
+  make_facets(age, dashed_line = "---")
+ggsave("age.png", width = 7, height = 7)
+```
+
+```{r}
+# Race graph
+make_facets(wakefield_long, race, dashed_line = "-----") +
+  facet_grid(cols = vars(estimate), rows = vars(gender))
+
+ggsave("racegender.png", width = 10, height = 7)
+```
+
+# Matched sample
+
+```{r}
+wakefield_matched <- wakefield_validate %>%
+  filter(gender_male == 0 & race_white == 0) %>%
+  select(rating:internal_assessment) %>%
+  rowid_to_column("index") %>%
+  bind_rows(.,.)
+
+dupes <- duplicated(wakefield_matched)
+wakefield_matched$dupe <- FALSE
+wakefield_matched[dupes,'gender'] <- 'Male'
+wakefield_matched[dupes,'race'] <- 'White'
+wakefield_matched[dupes,'dupe'] <- TRUE
+
+wakefield_matched %<>% simulate_data()
+```
+
+
+```{r}
+wakefield_matched <- dml_fair(wakefield_matched)
+
+# Create residuals + base case predictions
+wakefield_matched$bcY <- wakefield_matched$ests + base_case
+
+# Gather in long format
+wakefield_matched_long <- wakefield_matched %>%
+  gather(key = "estimate", value = "value", bcY, ests_unfair) %>%
+  mutate(estimate = ifelse(estimate == "bcY", "Fair estimate", "Unfair estimate"))
+```
+
+
+```{r}
+split_frames <- split(wakefield_matched_long, wakefield_matched_long$dupe %>% as.factor())
+
+counter_error <- split_frames[[1]]$value - split_frames[[2]]$value
+counter_ability <- split_frames[[1]]$ability - split_frames[[2]]$ability
+counter_error_df <- data.frame(error = counter_error, estimate = split_frames[[1]]$estimate)
+```
+
+```{r}
+counter_error_df %>%
+  ggplot(aes(x = error)) +
+  geom_histogram() +
+  facet_grid(rows = vars(estimate))
+```
+
+```{r}
+counter_error_df %>% group_by(estimate) %>% summarise(mean = mean(error), sd = sd(error))
+```
+
+# What about white men vs white women?
+
+```{r}
+wakefield_matched <- wakefield_validate %>%
+  filter(gender_male == 0 & race_white == 0) %>%
+  select(rating:internal_assessment) %>%
+  rowid_to_column("index") %>%
+  bind_rows(.,.)
+
+dupes <- duplicated(wakefield_matched)
+wakefield_matched$dupe <- FALSE
+wakefield_matched[dupes,'gender'] <- 'Male'
+wakefield_matched$race <- 'White'
+wakefield_matched[dupes,'dupe'] <- TRUE
+
+wakefield_matched %<>% simulate_data() %>%
+  bind_rows(wakefield_validate[0,])
+wakefield_matched[is.na(wakefield_matched)] <- 0
+```
+
+
+```{r}
+wakefield_matched <- dml_fair(wakefield_matched)
+
+# Create residuals + base case predictions
+wakefield_matched$bcY <- wakefield_matched$ests + base_case
+
+# Gather in long format
+wakefield_matched_long <- wakefield_matched %>%
+  gather(key = "estimate", value = "value", bcY, ests_unfair) %>%
+  mutate(estimate = ifelse(estimate == "bcY", "Fair estimate", "Unfair estimate"))
+```
+
+
+```{r}
+split_frames <- split(wakefield_matched_long, wakefield_matched_long$dupe %>% as.factor())
+
+counter_error <- split_frames[[1]]$value - split_frames[[2]]$value
+counter_ability <- split_frames[[1]]$ability - split_frames[[2]]$ability
+counter_error_df <- data.frame(error = counter_error, estimate = split_frames[[1]]$estimate)
+```
+
+```{r}
+counter_error_df %>%
+  ggplot(aes(x = error)) +
+  geom_histogram() +
+  facet_grid(rows = vars(estimate))
+```
+
+```{r}
+counter_error_df %>% group_by(estimate) %>% summarise(mean = mean(error), sd = sd(error))
+```
+
+
