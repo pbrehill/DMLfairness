@@ -366,7 +366,7 @@ counter_error_df %>% group_by(estimate) %>% summarise(mean = mean(error), sd = s
 
 ```{r}
 wakefield_matched <- wakefield_validate %>%
-  filter(gender_male == 0 & race_white == 0) %>%
+  filter(gender_female == 1) %>%
   select(rating:internal_assessment) %>%
   rowid_to_column("index") %>%
   bind_rows(.,.)
