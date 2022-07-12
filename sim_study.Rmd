@@ -339,7 +339,7 @@ wakefield_matched$bcY <- wakefield_matched$ests + base_case
 # Gather in long format
 wakefield_matched_long <- wakefield_matched %>%
   gather(key = "estimate", value = "value", bcY, ests_unfair) %>%
-  mutate(estimate = ifelse(estimate == "bcY", "Fair estimate", "Unfair estimate"))
+  mutate(estimate = ifelse(estimate == "bcY", "DML Fairness", "Fairness through unawareness"))
 ```
 
 
@@ -356,6 +356,8 @@ counter_error_df %>%
   ggplot(aes(x = error)) +
   geom_histogram() +
   facet_grid(rows = vars(estimate))
+
+ggsave('non-whitenon-men.png', height = 7, width = 7)
 ```
 
 ```{r}
@@ -409,6 +411,8 @@ counter_error_df %>%
   ggplot(aes(x = error)) +
   geom_histogram() +
   facet_grid(rows = vars(estimate))
+
+ggsave('white_women.png', height = 7, width = 7)
 ```
 
 ```{r}

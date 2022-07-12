@@ -1,0 +1,215 @@
+---
+title: "Test fairness"
+output: html_notebook
+---
+
+```{r}
+library(tidyverse)
+library(magrittr)
+library(caret)
+library(fairml)
+library(gbm)
+library(fastDummies)
+library(ranger)
+# detach("wakefield")
+```
+
+```{r}
+# Set global variables
+set.seed(11111111)
+test_size <- 5000
+
+ntree <- 500
+```
+
+```{r}
+# Import and wrangle data
+data("law.school.admissions")
+data <- law.school.admissions
+data %<>% dummy_cols() %>% janitor::clean_names() %>% select(age:race1_white) %>% select(-gender, -race1) %>% mutate_if(is.factor, as.integer)
+```
+
+```{r}
+# Create data for training
+smp_size <- floor(0.75 * nrow(data))
+train_ind <- sample(seq_len(nrow(data)), size = smp_size)
+
+train <- data[train_ind, ]
+test <- data[-train_ind, ]
+test_orig <- law.school.admissions[-train_ind, c("gender", "race1")]
+```
+
+
+```{r}
+# Fit nuisance model
+data_folds <- createFolds(train$ugpa)
+list_models <- list()
+
+# Intialise progress bar
+pb = txtProgressBar(min = 0, max = length(data_folds), initial = 0) 
+
+targets <- names(law.school.admissions)[!(names(law.school.admissions) %in% c('gender', 'race1'))]
+
+for (i in 1:length(targets)) {
+  data[paste0(targets, "_est")] <- NULL
+  data[targets] <- as.numeric(data[targets] %>% pull)
+}
+
+for (fold in 1:length(data_folds)) {
+  # Split sample
+  split <- train[-data_folds[[fold]],]
+  estimate <- train[data_folds[[fold]],]
+  
+  # Fit models
+  nuisance_models <- map(targets, ~ranger(paste0(.x, " ~ gender_male + gender_female + race1_white + race1_black + race1_hisp + race1_asian + race1_other"), data = split, num.trees = ntree))
+  names(nuisance_models) <- targets
+  
+  list_models[[fold]] <- nuisance_models
+  
+  # Get estimates
+  for (variable in 1:length(nuisance_models)) {
+    train[data_folds[[fold]], paste0(targets[variable], '_res')] <- estimate[,targets[variable]] - predict(nuisance_models[[variable]], data = estimate)$predictions
+  }
+      
+  setTxtProgressBar(pb,fold)
+}
+```
+
+```{r}
+# Fit final models
+final_model <- ranger(ugpa_res ~., data = train %>% select(ends_with("_res")), num.trees = ntree)
+
+final_model_unfair <- ranger(ugpa ~ age + decile1 + decile3 + fam_inc + lsat + ugpa + cluster + fulltime, data = train, num.trees = ntree)
+```
+
+```{r}
+# Get nuisance predictions for test sample
+## Make function to get predictions from ensemble of nuisance models
+predict_cross <- function(models, data = test) {
+  preds <- map(models, ~predict(.x, data) %>% .$predictions)
+
+  names(preds) <- paste0('model', 1:length(models))
+  bind_cols(preds) %>% rowMeans()
+}
+
+dml_fair <- function(df) {
+  
+  ## Get nuisance estimates
+  for (variable in 1:length(targets)) {
+    df[paste0(targets[variable], "_res")] <- df[targets[variable]] - predict_cross(map(list_models, ~.x[[targets[variable]]]), data = df)
+  }
+  
+  # Get predictions
+  final_prediction_model <- final_model %>% predict(data = df)
+  final_predictions <- final_prediction_model$predictions
+  
+  final_prediction_model_unfair <- final_model_unfair %>% predict(data = df)
+  final_predictions_unfair <- final_prediction_model_unfair$predictions
+  
+  df$ests <- final_predictions
+  df$ests_unfair <- final_predictions_unfair
+  
+  df
+}
+
+
+```
+
+
+```{r}
+# Base case
+base_case <- predict_cross(map(list_models, ~.x[["ugpa"]]), data = data.frame(
+  gender_male = 1,
+  gender_female = 0,
+  race1_white = 1,
+  race1_black = 0,
+  race1_hisp = 0,
+  race1_asian = 0, 
+  race1_other = 0
+  )
+        )
+```
+
+```{r}
+# Get DML adjustments
+test <- dml_fair(test)
+```
+
+```{r}
+# Create residuals + base case predictions
+test$bcY <- test$ests + base_case
+
+# Add original gender and race in for visualisations
+test <- bind_cols(test, test_orig)
+
+# Gather in long format
+data_long <- test %>%
+  gather(key = "estimate", value = "value", bcY, ests_unfair) %>%
+  mutate(estimate = ifelse(estimate == "bcY", "Fair estimate", "Unfair estimate"))
+```
+
+
+
+```{r}
+make_facets <- function(data, variable, facet_var = NULL) {
+  variable <- ensym(variable)
+  
+  if(is.null(facet_var)) {
+    facet_setting <- facet_grid(cols = vars(estimate))
+  } else {
+    facet_setting <- facet_grid(cols = vars(estimate), rows = vars(!!variable))
+  }
+  
+  data %>%
+    ggplot(aes(x = !!variable, y = value)) +
+    geom_boxplot() +
+    facet_grid(cols = vars(estimate))
+}
+```
+
+```{r}
+# Gender graph
+make_facets(data_long, gender)
+ggsave("gender_lsac.png", width = 7, height = 7)
+```
+
+```{r}
+# Race graph
+make_facets(data_long, race1)
+ggsave("race_lsac.png", width = 10, height = 7)
+```
+
+```{r}
+# Race graph
+make_facets(data_long, race1) +
+  facet_grid(cols = vars(estimate), rows = vars(gender))
+
+ggsave("racegender_lsac.png", width = 10, height = 7)
+```
+
+```{r}
+test %>%
+  mutate(treat = ifelse(gender == "female" & race1 == "black",1,0)) %>%
+  filter(treat == 1 | (gender == "male" & race1 == "white"))%>%
+  select(age:bar, treat) %>%
+  write_csv('black_women.csv')
+```
+
+```{r}
+test %>%
+  filter(treat == 1 | (gender == "male" & race1 == "white"))%>%
+  select(age:bar, treat) %>%
+  write_csv('black_men.csv')
+```
+
+```{r}
+test %>%
+  mutate(treat = ifelse(gender == "female" & race1 == "white",1,0)) %>%
+  filter(treat == 1 | (gender == "male" & race1 == "white"))%>%
+  select(age:bar, treat) %>%
+  write_csv('white_women.csv')
+```
+
+
+
+
