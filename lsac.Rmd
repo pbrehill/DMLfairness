@@ -94,8 +94,8 @@ dml_fair <- function(data) {
     as.matrix.data.frame()
   
 resids <- map(targets, function (x) {
-    pred <- predict(nuisance_models[[x]], predict_data)
-    resid <- data[x] - pred
+    pred <- predict(nuisance_models[[x]], predict_data, estimate.variance = TRUE)
+    resid <- data[x] - pred$prediction
 })
 
 # tars <- targets
@@ -107,7 +107,9 @@ names(resids) <- paste0(targets, '_res')
   final_prediction_model <- final_model %>% predict(resids %>% select(-ugpa_res))
   final_predictions <- final_prediction_model$predictions
   
-  final_prediction_model_unfair <- final_model_unfair %>% predict(data %>% select(all_of(targets), -ugpa))
+  # Unfair preds
+  unfair_data <- data[final_model_unfair$X.orig %>% names()]
+  final_prediction_model_unfair <- final_model_unfair %>% predict(unfair_data)
   final_predictions_unfair <- final_prediction_model_unfair$predictions
   
   data$ests <- final_predictions
@@ -142,9 +144,6 @@ test <- dml_fair(test)
 ```{r}
 # Create residuals + base case predictions
 test$bcY <- test$ests + base_case %>% pull()
-
-# Add original gender and race in for visualisations
-test <- 
 
 # Gather in long format
 data_long <- bind_cols(test, test_orig %>%
