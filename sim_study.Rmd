@@ -257,13 +257,13 @@ wakefield_validate$bcY <- wakefield_validate$ests + base_case
 # Gather in long format
 wakefield_long <- wakefield_validate %>%
   gather(key = "estimate", value = "value", bcY, ests_unfair) %>%
-  mutate(estimate = ifelse(estimate == "bcY", "Fair estimate", "Unfair estimate"))
+  mutate(estimate = ifelse(estimate == "bcY", "DML Fairness", "Unawareness"))
 ```
 
 
 
 ```{r}
-make_facets <- function(data, variable, facet_var = NULL, dashed_line = "---------") {
+make_facets <- function(data, variable, facet_var = NULL) {
   variable <- ensym(variable)
   
   if(is.null(facet_var)) {
@@ -273,13 +273,13 @@ make_facets <- function(data, variable, facet_var = NULL, dashed_line = "-------
   }
   
   data %>%
-  ggplot(aes(x = !!variable, y = value)) +
-  geom_boxplot() +
-  stat_summary(aes(y = ability / mean(ability) * mean(data$value[data$estimate == 'Fair estimate'])), fun.y = mean, colour = "red", size = 5, geom = "text", label= dashed_line) +
-  scale_y_continuous(
-   name = "Predictions",
-   sec.axis = sec_axis(~(./ mean(data$value[data$estimate == 'Fair estimate'])) * mean(data$ability), name="Average ability (latent)")
-  ) + facet_grid(cols = vars(estimate))
+    ggplot(aes(x = !!variable, y = value)) +
+    geom_violin() +
+    stat_summary(fun.data = "mean_cl_boot",
+               geom = "crossbar", 
+               width = 0.5,
+               colour = "red") +
+    facet_grid(cols = vars(estimate))
 }
 ```
 
@@ -291,7 +291,7 @@ ggsave("gender.png", width = 7, height = 7)
 
 ```{r}
 # Race graph
-make_facets(wakefield_long, race, dashed_line = "---")
+make_facets(wakefield_long, race)
 ggsave("race.png", width = 10, height = 7)
 ```
 
@@ -299,13 +299,13 @@ ggsave("race.png", width = 10, height = 7)
 # Age graph
 wakefield_long %>%
   mutate(age = as.factor(age)) %>%
-  make_facets(age, dashed_line = "---")
+  make_facets(age)
 ggsave("age.png", width = 7, height = 7)
 ```
 
 ```{r}
 # Race graph
-make_facets(wakefield_long, race, dashed_line = "-----") +
+make_facets(wakefield_long, race) +
   facet_grid(cols = vars(estimate), rows = vars(gender))
 
 ggsave("racegender.png", width = 10, height = 7)

@@ -145,7 +145,7 @@ test <- bind_cols(test, test_orig)
 # Gather in long format
 data_long <- test %>%
   gather(key = "estimate", value = "value", bcY, ests_unfair) %>%
-  mutate(estimate = ifelse(estimate == "bcY", "Fair estimate", "Unfair estimate"))
+  mutate(estimate = ifelse(estimate == "bcY", "DML Fairness", "Unawareness"))
 ```
 
 
@@ -162,7 +162,11 @@ make_facets <- function(data, variable, facet_var = NULL) {
   
   data %>%
     ggplot(aes(x = !!variable, y = value)) +
-    geom_boxplot() +
+    geom_violin() +
+    stat_summary(fun.data = "mean_cl_boot",
+               geom = "crossbar", 
+               width = 0.5,
+               colour = "red") +
     facet_grid(cols = vars(estimate))
 }
 ```
@@ -187,28 +191,6 @@ make_facets(data_long, race1) +
 ggsave("racegender_lsac.png", width = 10, height = 7)
 ```
 
-```{r}
-test %>%
-  mutate(treat = ifelse(gender == "female" & race1 == "black",1,0)) %>%
-  filter(treat == 1 | (gender == "male" & race1 == "white"))%>%
-  select(age:bar, treat) %>%
-  write_csv('black_women.csv')
-```
-
-```{r}
-test %>%
-  filter(treat == 1 | (gender == "male" & race1 == "white"))%>%
-  select(age:bar, treat) %>%
-  write_csv('black_men.csv')
-```
-
-```{r}
-test %>%
-  mutate(treat = ifelse(gender == "female" & race1 == "white",1,0)) %>%
-  filter(treat == 1 | (gender == "male" & race1 == "white"))%>%
-  select(age:bar, treat) %>%
-  write_csv('white_women.csv')
-```
 
 
 
