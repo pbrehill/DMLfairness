@@ -10,7 +10,7 @@ library(caret)
 library(fairml)
 library(gbm)
 library(fastDummies)
-library(ranger)
+library(grf)
 # detach("wakefield")
 ```
 
@@ -43,10 +43,6 @@ test_orig <- law.school.admissions[-train_ind, c("gender", "race1")]
 ```{r}
 # Fit nuisance model
 data_folds <- createFolds(train$ugpa)
-list_models <- list()
-
-# Intialise progress bar
-pb = txtProgressBar(min = 0, max = length(data_folds), initial = 0) 
 
 targets <- names(law.school.admissions)[!(names(law.school.admissions) %in% c('gender', 'race1'))]
 
@@ -55,31 +51,30 @@ for (i in 1:length(targets)) {
   data[targets] <- as.numeric(data[targets] %>% pull)
 }
 
-for (fold in 1:length(data_folds)) {
   # Split sample
-  split <- train[-data_folds[[fold]],]
-  estimate <- train[data_folds[[fold]],]
+  
+  covars <- select(train, gender_male, gender_female, race1_white, race1_black, race1_hisp, race1_asian, race1_other) %>% as.matrix.data.frame()
   
   # Fit models
-  nuisance_models <- map(targets, ~ranger(paste0(.x, " ~ gender_male + gender_female + race1_white + race1_black + race1_hisp + race1_asian + race1_other"), data = split, num.trees = ntree))
+  nuisance_models <- map(targets, function (x) {
+    Y <- select(train, x) %>% pull()
+    
+    regression_forest(X=covars, Y=Y, num.trees = ntree)
+    })
   names(nuisance_models) <- targets
   
-  list_models[[fold]] <- nuisance_models
-  
   # Get estimates
-  for (variable in 1:length(nuisance_models)) {
-    train[data_folds[[fold]], paste0(targets[variable], '_res')] <- estimate[,targets[variable]] - predict(nuisance_models[[variable]], data = estimate)$predictions
-  }
-      
-  setTxtProgressBar(pb,fold)
+for (variable in 1:length(targets)) {
+  train[,paste0(targets[variable], '_res')] <- train[,targets[variable]] - predict(nuisance_models[[variable]], data = train)$predictions
 }
+      
 ```
 
 ```{r}
 # Fit final models
-final_model <- ranger(ugpa_res ~., data = train %>% select(ends_with("_res")), num.trees = ntree)
+final_model <- regression_forest(Y=train$ugpa_res, X= train %>% select(ends_with("_res"), -ugpa_res), num.trees = ntree)
 
-final_model_unfair <- ranger(ugpa ~ age + decile1 + decile3 + fam_inc + lsat + ugpa + cluster + fulltime, data = train, num.trees = ntree)
+final_model_unfair <- regression_forest(Y=train$ugpa, X= select(train, age, decile1, decile3, fam_inc, lsat, ugpa, cluster, fulltime), num.trees = ntree)
 ```
 
 ```{r}
@@ -92,24 +87,33 @@ predict_cross <- function(models, data = test) {
   bind_cols(preds) %>% rowMeans()
 }
 
-dml_fair <- function(df) {
+dml_fair <- function(data) {
   
   ## Get nuisance estimates
-  for (variable in 1:length(targets)) {
-    df[paste0(targets[variable], "_res")] <- df[targets[variable]] - predict_cross(map(list_models, ~.x[[targets[variable]]]), data = df)
-  }
+      predict_data <- select(data, gender_male, gender_female, race1_white, race1_black, race1_hisp, race1_asian, race1_other) %>% 
+    as.matrix.data.frame()
+  
+resids <- map(targets, function (x) {
+    pred <- predict(nuisance_models[[x]], predict_data)
+    resid <- data[x] - pred
+})
+
+# tars <- targets
+
+resids %<>% as.data.frame()
+names(resids) <- paste0(targets, '_res')
   
   # Get predictions
-  final_prediction_model <- final_model %>% predict(data = df)
+  final_prediction_model <- final_model %>% predict(resids %>% select(-ugpa_res))
   final_predictions <- final_prediction_model$predictions
   
-  final_prediction_model_unfair <- final_model_unfair %>% predict(data = df)
+  final_prediction_model_unfair <- final_model_unfair %>% predict(data %>% select(all_of(targets), -ugpa))
   final_predictions_unfair <- final_prediction_model_unfair$predictions
   
-  df$ests <- final_predictions
-  df$ests_unfair <- final_predictions_unfair
+  data$ests <- final_predictions
+  data$ests_unfair <- final_predictions_unfair
   
-  df
+  data
 }
 
 
@@ -118,7 +122,7 @@ dml_fair <- function(df) {
 
 ```{r}
 # Base case
-base_case <- predict_cross(map(list_models, ~.x[["ugpa"]]), data = data.frame(
+base_case <- predict(nuisance_models$ugpa, data.frame(
   gender_male = 1,
   gender_female = 0,
   race1_white = 1,
@@ -137,13 +141,14 @@ test <- dml_fair(test)
 
 ```{r}
 # Create residuals + base case predictions
-test$bcY <- test$ests + base_case
+test$bcY <- test$ests + base_case %>% pull()
 
 # Add original gender and race in for visualisations
-test <- bind_cols(test, test_orig)
+test <- 
 
 # Gather in long format
-data_long <- test %>%
+data_long <- bind_cols(test, test_orig %>%
+  select(gender, race1)) %>%
   gather(key = "estimate", value = "value", bcY, ests_unfair) %>%
   mutate(estimate = ifelse(estimate == "bcY", "DML Fairness", "Unawareness"))
 ```
