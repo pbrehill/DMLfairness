@@ -19,7 +19,7 @@ library(grf)
 set.seed(11111111)
 test_size <- 5000
 
-ntree <- 500
+ntree <- 5000
 ```
 
 ```{r}
@@ -72,9 +72,9 @@ for (variable in 1:length(targets)) {
 
 ```{r}
 # Fit final models
-final_model <- regression_forest(Y=train$ugpa_res, X= train %>% select(ends_with("_res"), -ugpa_res), num.trees = ntree)
+final_model <- regression_forest(Y=train$ugpa_res, X= train %>% select(ends_with("_res"), -ugpa_res), num.trees = ntree, ci.group.size = 20)
 
-final_model_unfair <- regression_forest(Y=train$ugpa, X= select(train, age, decile1, decile3, fam_inc, lsat, ugpa, cluster, fulltime), num.trees = ntree)
+final_model_unfair <- regression_forest(Y=train$ugpa, X= select(train, age, decile1, decile3, fam_inc, lsat, ugpa, cluster, fulltime), num.trees = ntree, ci.group.size = 20)
 ```
 
 ```{r}
@@ -104,16 +104,18 @@ resids %<>% as.data.frame()
 names(resids) <- paste0(targets, '_res')
   
   # Get predictions
-  final_prediction_model <- final_model %>% predict(resids %>% select(-ugpa_res))
+  final_prediction_model <- final_model %>% predict(resids %>% select(-ugpa_res), estimate.variance = TRUE)
   final_predictions <- final_prediction_model$predictions
   
   # Unfair preds
   unfair_data <- data[final_model_unfair$X.orig %>% names()]
-  final_prediction_model_unfair <- final_model_unfair %>% predict(unfair_data)
+  final_prediction_model_unfair <- final_model_unfair %>% predict(unfair_data, estimate.variance = TRUE)
   final_predictions_unfair <- final_prediction_model_unfair$predictions
   
   data$ests <- final_predictions
+  data$variance <- final_prediction_model$variance.estimates
   data$ests_unfair <- final_predictions_unfair
+  data$variance_unfair <- final_prediction_model_unfair$variance.estimates
   
   data
 }
